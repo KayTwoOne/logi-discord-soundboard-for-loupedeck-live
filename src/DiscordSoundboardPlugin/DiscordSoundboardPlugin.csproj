@@ -35,14 +35,15 @@
     <Copy SourceFiles="@(PackageFiles)" DestinationFolder="$(OutputPath)..\%(RecursiveDir)" />
   </Target>
 
-  <Target Name="InstallLink" AfterTargets="CopyPackage">
+  <!-- Dev-link install only for Debug builds; Release is for .lplug4 packaging. -->
+  <Target Name="InstallLink" AfterTargets="CopyPackage" Condition="'$(Configuration)' == 'Debug'">
     <Exec Condition="$(OS) == 'Windows_NT'" Command="echo $(BaseOutputPath)$(Configuration)\ &gt; &quot;$(PluginDir)$(ProjectName).link&quot;&#xD;&#xA;start loupedeck:plugin/DiscordSoundboard/reload" />
     <Exec Condition="$(OS) != 'Windows_NT'" Command="echo $(BaseOutputPath)$(Configuration)\ &gt; $(PluginDir)$(ProjectName).link" />
   </Target>
 
   <Target Name="PluginClean" AfterTargets="CoreClean">
-    <Delete Condition="$(OS) == 'Windows_NT'" Files="$(PluginDir)$(ProjectName).link" />
-    <Exec Condition="$(OS) != 'Windows_NT'" Command="rm -f $(PluginDir)$(ProjectName).link" />
+    <Delete Condition="$(OS) == 'Windows_NT' And '$(Configuration)' == 'Debug'" Files="$(PluginDir)$(ProjectName).link" />
+    <Exec Condition="$(OS) != 'Windows_NT' And '$(Configuration)' == 'Debug'" Command="rm -f $(PluginDir)$(ProjectName).link" />
     <RemoveDir Directories="$(OutputPath)..\" />
   </Target>
 

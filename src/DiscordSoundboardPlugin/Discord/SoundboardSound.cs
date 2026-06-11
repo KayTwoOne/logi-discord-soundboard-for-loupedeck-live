@@ -18,6 +18,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
 
         public String EmojiName { get; set; }
 
+        // Set when the sound's emoji is a custom (uploaded) one; its image lives on
+        // Discord's CDN at cdn.discordapp.com/emojis/{id}.png.
+        public String EmojiId { get; set; }
+
         // False when Discord reports the sound as unusable for this user
         // (e.g. a Nitro-gated external sound after Nitro lapsed).
         public Boolean Available { get; set; } = true;

@@ -1,6 +1,7 @@
 namespace Loupedeck.DiscordSoundboardPlugin.Actions
 {
     using System;
+    using System.Threading.Tasks;
 
     using Loupedeck.DiscordSoundboardPlugin.Discord;
 
@@ -22,6 +23,8 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             if (service != null)
             {
                 service.SoundsChanged += this.OnSoundsChanged;
+                service.PlayAttempted += this.OnPlayAttempted;
+                service.EmojiCacheUpdated += this.OnEmojiCacheUpdated;
                 this.RebuildParameterList();
             }
             return true;
@@ -33,6 +36,8 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             if (service != null)
             {
                 service.SoundsChanged -= this.OnSoundsChanged;
+                service.PlayAttempted -= this.OnPlayAttempted;
+                service.EmojiCacheUpdated -= this.OnEmojiCacheUpdated;
             }
             return true;
         }
@@ -44,7 +49,22 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             => this.Service?.FindSound(actionParameter)?.Name ?? "Sound";
 
         protected override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize)
-            => SoundTile.Render(this.Service?.FindSound(actionParameter), imageSize, this.Service?.GetConfig());
+        {
+            var service = this.Service;
+            var sound = service?.FindSound(actionParameter);
+            var config = service?.GetConfig();
+            var emoji = config?.ShowEmoji == true ? service?.GetEmojiImage(sound?.EmojiId) : null;
+            return SoundTile.Render(sound, imageSize, config, service?.GetPlayFeedback(actionParameter), emoji);
+        }
+
+        // Redraw the pressed tile for the flash, then again once the flash window passes.
+        private void OnPlayAttempted(Object sender, String key)
+        {
+            this.ActionImageChanged(key);
+            _ = Task.Delay(900).ContinueWith(_ => this.ActionImageChanged(key));
+        }
+
+        private void OnEmojiCacheUpdated(Object sender, EventArgs e) => this.ActionImageChanged();
 
         private void OnSoundsChanged(Object sender, EventArgs e)
         {

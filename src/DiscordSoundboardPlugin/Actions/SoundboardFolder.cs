@@ -3,6 +3,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
     using System;
     using System.Collections.Generic;
     using System.Linq;
+    using System.Threading.Tasks;
 
     using Loupedeck.DiscordSoundboardPlugin.Discord;
 
@@ -44,6 +45,8 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             if (this._subscribed && service != null)
             {
                 service.SoundsChanged -= this.OnSoundsChanged;
+                service.PlayAttempted -= this.OnPlayAttempted;
+                service.EmojiCacheUpdated -= this.OnEmojiCacheUpdated;
                 this._subscribed = false;
             }
             return true;
@@ -84,9 +87,17 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 : this.Service?.FindSound(actionParameter)?.Name ?? "Sound";
 
         public override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize)
-            => actionParameter == RefreshParameter
-                ? SoundTile.RenderLabel("Refresh", imageSize, new BitmapColor(45, 49, 54))
-                : SoundTile.Render(this.Service?.FindSound(actionParameter), imageSize, this.Service?.GetConfig());
+        {
+            if (actionParameter == RefreshParameter)
+            {
+                return SoundTile.RenderLabel("Refresh", imageSize, new BitmapColor(45, 49, 54));
+            }
+            var service = this.Service;
+            var sound = service?.FindSound(actionParameter);
+            var config = service?.GetConfig();
+            var emoji = config?.ShowEmoji == true ? service?.GetEmojiImage(sound?.EmojiId) : null;
+            return SoundTile.Render(sound, imageSize, config, service?.GetPlayFeedback(actionParameter), emoji);
+        }
 
         public override BitmapImage GetButtonImage(PluginImageSize imageSize)
             => SoundTile.RenderLabel("Sound\nboard", imageSize, SoundTile.Blurple);
@@ -99,9 +110,20 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 return;
             }
             service.SoundsChanged += this.OnSoundsChanged;
+            service.PlayAttempted += this.OnPlayAttempted;
+            service.EmojiCacheUpdated += this.OnEmojiCacheUpdated;
             this._subscribed = true;
         }
 
         private void OnSoundsChanged(Object sender, EventArgs e) => this.ButtonActionNamesChanged();
+
+        // Redraw the pressed tile for the flash, then again once the flash window passes.
+        private void OnPlayAttempted(Object sender, String key)
+        {
+            this.CommandImageChanged(key);
+            _ = Task.Delay(900).ContinueWith(_ => this.CommandImageChanged(key));
+        }
+
+        private void OnEmojiCacheUpdated(Object sender, EventArgs e) => this.ButtonActionNamesChanged();
     }
 }

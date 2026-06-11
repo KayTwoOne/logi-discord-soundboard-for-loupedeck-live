@@ -1,6 +1,7 @@
 namespace Loupedeck.DiscordSoundboardPlugin.Discord
 {
     using System;
+    using System.Collections.Concurrent;
     using System.Collections.Generic;
     using System.IO;
     using System.Linq;
@@ -44,9 +45,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         [JsonPropertyName("tile_colors")]
         public Dictionary<String, String> TileColors { get; set; } = new Dictionary<String, String>();
 
-        // Prepend the sound's emoji to the tile text (rendering depends on device font support).
+        // Show the sound's emoji on its tile. Custom (uploaded) emoji are fetched from
+        // Discord's CDN and drawn as images; unicode emoji fall back to text.
         [JsonPropertyName("show_emoji")]
-        public Boolean ShowEmoji { get; set; }
+        public Boolean ShowEmoji { get; set; } = true;
 
         // Ignore presses arriving within this window after a play, to absorb double-taps.
         [JsonPropertyName("play_cooldown_ms")]
@@ -86,8 +88,20 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         private DateTime _configCacheStamp;
         private DateTime _lastPlayUtc;
 
+        private static readonly TimeSpan FeedbackDuration = TimeSpan.FromMilliseconds(800);
+        private readonly ConcurrentDictionary<String, (Boolean Success, DateTime UntilUtc)> _playFeedback =
+            new ConcurrentDictionary<String, (Boolean, DateTime)>();
+        private readonly ConcurrentDictionary<String, Byte[]> _emojiMemory = new ConcurrentDictionary<String, Byte[]>();
+        private readonly ConcurrentDictionary<String, Boolean> _emojiFetching = new ConcurrentDictionary<String, Boolean>();
+
         public event EventHandler SoundsChanged;
         public event EventHandler StatusChanged;
+
+        // Raised after a play attempt resolves, with the sound key; tiles flash green/red.
+        public event EventHandler<String> PlayAttempted;
+
+        // Raised when a custom emoji image finishes downloading.
+        public event EventHandler EmojiCacheUpdated;
 
         public PluginStatus Status { get; private set; } = PluginStatus.Warning;
 
@@ -217,6 +231,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             if (client?.IsConnected != true || sound == null)
             {
                 PluginLog.Warning($"Cannot play '{key}': {(sound == null ? "unknown sound" : "not connected to Discord")}");
+                this.SetPlayFeedback(key, false);
                 return false;
             }
 
@@ -226,6 +241,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 var now = DateTime.UtcNow;
                 if ((now - this._lastPlayUtc).TotalMilliseconds < config.PlayCooldownMs)
                 {
+                    // Deliberately no feedback flash: a debounced press is not a failure.
                     PluginLog.Verbose($"Ignored '{sound.Name}' (within {config.PlayCooldownMs}ms cooldown)");
                     return false;
                 }
@@ -242,13 +258,88 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
 
                 using var response = await client.RequestAsync("PLAY_SOUNDBOARD_SOUND", args).ConfigureAwait(false);
                 PluginLog.Info($"Played soundboard sound '{sound.Name}'");
+                this.SetPlayFeedback(key, true);
                 return true;
             }
             catch (Exception ex)
             {
                 PluginLog.Warning(ex, $"Failed to play '{sound.Name}' (are you in a voice channel?)");
+                this.SetPlayFeedback(key, false);
                 return false;
             }
+        }
+
+        // Returns true/false while a recent play attempt's flash window is active, else null.
+        public Boolean? GetPlayFeedback(String key)
+            => this._playFeedback.TryGetValue(key, out var feedback) && DateTime.UtcNow < feedback.UntilUtc
+                ? feedback.Success
+                : null;
+
+        private void SetPlayFeedback(String key, Boolean success)
+        {
+            this._playFeedback[key] = (success, DateTime.UtcNow + FeedbackDuration);
+            this.PlayAttempted?.Invoke(this, key);
+        }
+
+        // Returns the PNG bytes of a custom emoji, fetching from Discord's CDN in the
+        // background on first sight (EmojiCacheUpdated fires when it lands).
+        public Byte[] GetEmojiImage(String emojiId)
+        {
+            // Ids are snowflakes; the digit check also guards the path/URL we build below.
+            if (String.IsNullOrEmpty(emojiId) || this._dataDirectory == null || !emojiId.All(Char.IsDigit))
+            {
+                return null;
+            }
+            if (this._emojiMemory.TryGetValue(emojiId, out var bytes))
+            {
+                return bytes;
+            }
+
+            var path = Path.Combine(this._dataDirectory, "emoji", emojiId + ".png");
+            if (File.Exists(path))
+            {
+                try
+                {
+                    bytes = File.ReadAllBytes(path);
+                    this._emojiMemory[emojiId] = bytes;
+                    return bytes;
+                }
+                catch (Exception ex)
+                {
+                    PluginLog.Warning(ex, $"Could not read cached emoji {emojiId}");
+                }
+            }
+
+            this.FetchEmojiInBackground(emojiId, path);
+            return null;
+        }
+
+        private void FetchEmojiInBackground(String emojiId, String path)
+        {
+            if (!this._emojiFetching.TryAdd(emojiId, true))
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var bytes = await this._http.GetByteArrayAsync($"https://cdn.discordapp.com/emojis/{emojiId}.png?size=64").ConfigureAwait(false);
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+                    File.WriteAllBytes(path, bytes);
+                    this._emojiMemory[emojiId] = bytes;
+                    this.EmojiCacheUpdated?.Invoke(this, EventArgs.Empty);
+                }
+                catch (Exception ex)
+                {
+                    PluginLog.Warning(ex, $"Could not fetch emoji {emojiId} from Discord CDN");
+                }
+                finally
+                {
+                    this._emojiFetching.TryRemove(emojiId, out _);
+                }
+            });
         }
 
         public Task<Boolean> PlayRandomAsync(Boolean favoritesOnly)
@@ -300,6 +391,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                         Name = GetSnowflakeOrString(item, "name") ?? "Unnamed",
                         GuildId = GetSnowflakeOrString(item, "guild_id"),
                         EmojiName = GetSnowflakeOrString(item, "emoji_name"),
+                        EmojiId = GetSnowflakeOrString(item, "emoji_id"),
                         Available = !item.TryGetProperty("available", out var avail) || avail.ValueKind != JsonValueKind.False,
                     };
                     if (String.IsNullOrEmpty(sound.SoundId))

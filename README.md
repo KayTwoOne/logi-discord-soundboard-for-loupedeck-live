@@ -81,11 +81,25 @@ no reconnect needed. Sound ids come from `sounds.json` next to the config.
 | `hide_unavailable` | `false` | Hide Nitro-locked sounds entirely instead of showing them dimmed. |
 | `sort_mode` | `"server"` | `"server"` groups by server; `"name"` is one flat A–Z list. |
 | `tile_colors` | `{}` | Per-server button colours, e.g. `{ "123456789012345678": "#FF6600", "0": "#3BA55D" }` (`"0"` = Discord's default sounds). |
-| `show_emoji` | `false` | Prepend the sound's emoji to the tile label (rendering depends on device font support). |
+| `show_emoji` | `true` | Show each sound's emoji on its tile. Custom (uploaded) server emoji are downloaded from Discord's CDN and drawn as real images (cached in the plugin data folder); unicode emoji fall back to a text line. |
 | `play_cooldown_ms` | `0` | Ignore presses within this many ms of the last play — absorbs accidental double-taps (try `750`). |
 
 There is also a **Play Random Sound** action with two variants: any sound, or favourites
 only.
+
+Tiles flash **green** when a sound plays and **red** when it fails (not in a voice
+channel, disconnected, etc.), so you get instant feedback without looking at Discord.
+
+## Distribution (.lplug4)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File package.ps1
+```
+
+This produces `bin\DiscordSoundboard.lplug4` — a self-contained installable package.
+Anyone can install it by double-clicking it (or via the Loupedeck/Logi software's
+plugin installer), no build tools needed. They still create their own free Discord
+application (see Setup), which keeps every user's credentials their own.
 
 ## Troubleshooting
 

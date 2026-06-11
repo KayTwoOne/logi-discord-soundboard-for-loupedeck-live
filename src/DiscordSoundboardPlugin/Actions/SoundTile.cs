@@ -25,7 +25,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             new BitmapColor(94, 70, 128),   // violet
         };
 
-        public static BitmapImage Render(SoundboardSound sound, PluginImageSize imageSize, PluginConfig config = null)
+        private static readonly BitmapColor FlashSuccess = new BitmapColor(59, 165, 93);
+        private static readonly BitmapColor FlashFailure = new BitmapColor(218, 62, 82);
+
+        public static BitmapImage Render(SoundboardSound sound, PluginImageSize imageSize, PluginConfig config = null, Boolean? playFeedback = null, Byte[] emojiImage = null)
         {
             using var builder = new BitmapBuilder(imageSize);
 
@@ -36,24 +39,46 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 return builder.ToImage();
             }
 
-            var guildKey = sound.IsDefault ? "0" : sound.GuildId;
-            if (!(config?.TileColors != null && config.TileColors.TryGetValue(guildKey, out var hex) && TryParseHexColor(hex, out var background)))
+            BitmapColor background;
+            if (playFeedback.HasValue)
             {
-                background = sound.IsDefault ? Blurple : Palette[StableHash(sound.GuildId) % Palette.Length];
+                background = playFeedback.Value ? FlashSuccess : FlashFailure;
             }
-            if (!sound.Available)
+            else
             {
-                background = new BitmapColor(background.R / 3, background.G / 3, background.B / 3);
-            }
-
-            var text = Truncate(sound.Name, 24);
-            if (config?.ShowEmoji == true && !String.IsNullOrEmpty(sound.EmojiName))
-            {
-                text = sound.EmojiName + "\n" + text;
+                var guildKey = sound.IsDefault ? "0" : sound.GuildId;
+                if (!(config?.TileColors != null && config.TileColors.TryGetValue(guildKey, out var hex) && TryParseHexColor(hex, out background)))
+                {
+                    background = sound.IsDefault ? Blurple : Palette[StableHash(sound.GuildId) % Palette.Length];
+                }
+                if (!sound.Available)
+                {
+                    background = new BitmapColor(background.R / 3, background.G / 3, background.B / 3);
+                }
             }
 
             builder.Clear(background);
-            builder.DrawText(text, sound.Available ? BitmapColor.White : DimText);
+            var textColor = sound.Available || playFeedback.HasValue ? BitmapColor.White : DimText;
+            var text = Truncate(sound.Name, 24);
+
+            if (emojiImage != null)
+            {
+                // Custom emoji image on the upper half, name below.
+                var w = builder.Width;
+                var h = builder.Height;
+                var size = h * 45 / 100;
+                builder.DrawImage(emojiImage, (w - size) / 2, h * 6 / 100, size, size);
+                builder.DrawText(text, 0, h * 52 / 100, w, h * 44 / 100, textColor);
+            }
+            else
+            {
+                // Unicode emoji have no CDN image; show the character as a text line.
+                if (config?.ShowEmoji == true && String.IsNullOrEmpty(sound.EmojiId) && !String.IsNullOrEmpty(sound.EmojiName))
+                {
+                    text = sound.EmojiName + "\n" + text;
+                }
+                builder.DrawText(text, textColor);
+            }
             return builder.ToImage();
         }
 
