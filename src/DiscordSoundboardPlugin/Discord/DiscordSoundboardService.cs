@@ -24,6 +24,11 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         [JsonPropertyName("client_secret_protected")]
         public String ClientSecretProtected { get; set; }
 
+        // Discord requires a registered redirect URI for the authorize step even though
+        // nothing is ever opened. Must match one registered under OAuth2 -> Redirects.
+        [JsonPropertyName("redirect_uri")]
+        public String RedirectUri { get; set; } = "http://127.0.0.1";
+
         // Sound ids pinned to the top of the list ("favourites" are not exposed over RPC,
         // so the plugin keeps its own).
         [JsonPropertyName("favorite_sound_ids")]
@@ -87,6 +92,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         private PluginConfig _configCache;
         private DateTime _configCacheStamp;
         private DateTime _lastPlayUtc;
+        private DateTime _authorizeBackoffUntilUtc;
 
         private static readonly TimeSpan FeedbackDuration = TimeSpan.FromMilliseconds(800);
         private readonly ConcurrentDictionary<String, (Boolean Success, DateTime UntilUtc)> _playFeedback =
@@ -209,7 +215,11 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         }
 
         // Drops the current connection; the run loop reconnects automatically.
-        public void Reconnect() => this._client?.Dispose();
+        public void Reconnect()
+        {
+            this._authorizeBackoffUntilUtc = DateTime.MinValue;
+            this._client?.Dispose();
+        }
 
         // Forgets the cached OAuth token and reconnects, forcing the in-Discord approval modal.
         public void Reauthorize()
@@ -497,6 +507,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         // decrypted secret lives only in memory from then on.
         private PluginConfig LoadConfig()
         {
+            var readStamp = File.Exists(this.ConfigFilePath) ? File.GetLastWriteTimeUtc(this.ConfigFilePath) : DateTime.MinValue;
             var config = this.LoadJson<PluginConfig>("config.json");
             if (config == null)
             {
@@ -506,7 +517,9 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             if (!String.IsNullOrEmpty(config.ClientSecret))
             {
                 var protectedSecret = Dpapi.TryProtect(config.ClientSecret);
-                if (protectedSecret != null)
+                // Skip the rewrite if the file changed since we read it (the user may
+                // still be editing); we encrypt on a later pass instead of clobbering.
+                if (protectedSecret != null && File.GetLastWriteTimeUtc(this.ConfigFilePath) == readStamp)
                 {
                     var plaintext = config.ClientSecret;
                     config.ClientSecretProtected = protectedSecret;
@@ -590,20 +603,55 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
 
             if (token == null)
             {
+                // A declined or failed authorize must not respawn the popup every loop
+                // iteration; hold off so the user is asked at most ~once per 90 seconds.
+                var backoff = this._authorizeBackoffUntilUtc - DateTime.UtcNow;
+                if (backoff > TimeSpan.Zero)
+                {
+                    this.SetStatus(PluginStatus.Warning, $"Authorization was declined or failed; asking again in {(Int32)backoff.TotalSeconds}s (Re-authorize to retry now)");
+                    await Task.Delay(backoff, ct).ConfigureAwait(false);
+                }
+
                 this.SetStatus(PluginStatus.Warning, "Approve the authorization popup in Discord");
-                using var authorizeDoc = await client.RequestAsync("AUTHORIZE", new Dictionary<String, Object>
+                var authorizeArgs = new Dictionary<String, Object>
                 {
                     ["client_id"] = config.ClientId,
                     ["scopes"] = OAuthScopes,
                     ["prompt"] = "consent",
-                }, timeoutSeconds: 120).ConfigureAwait(false);
+                };
+                if (!String.IsNullOrEmpty(config.RedirectUri))
+                {
+                    authorizeArgs["redirect_uri"] = config.RedirectUri;
+                }
 
-                var code = authorizeDoc.RootElement.GetProperty("data").GetProperty("code").GetString();
-                token = await this.ExchangeTokenAsync(config, new Dictionary<String, String>
+                JsonDocument authorizeDoc;
+                try
+                {
+                    authorizeDoc = await client.RequestAsync("AUTHORIZE", authorizeArgs, timeoutSeconds: 120).ConfigureAwait(false);
+                }
+                catch (DiscordRpcException)
+                {
+                    this._authorizeBackoffUntilUtc = DateTime.UtcNow.AddSeconds(90);
+                    throw;
+                }
+
+                String code;
+                using (authorizeDoc)
+                {
+                    code = authorizeDoc.RootElement.GetProperty("data").GetProperty("code").GetString();
+                }
+
+                var exchangeArgs = new Dictionary<String, String>
                 {
                     ["grant_type"] = "authorization_code",
                     ["code"] = code,
-                }, ct).ConfigureAwait(false);
+                };
+                if (!String.IsNullOrEmpty(config.RedirectUri))
+                {
+                    exchangeArgs["redirect_uri"] = config.RedirectUri;
+                }
+                token = await this.ExchangeTokenAsync(config, exchangeArgs, ct).ConfigureAwait(false);
+                this._authorizeBackoffUntilUtc = DateTime.MinValue;
 
                 if (!await TryAuthenticateAsync(client, token).ConfigureAwait(false))
                 {

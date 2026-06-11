@@ -40,6 +40,8 @@ about two minutes, and doesn't change anything about your Discord account:
 3. On the **OAuth2** page you'll see two codes: a **Client ID** and a **Client Secret**.
    Copy both into the plugin's settings file (the README shows exactly where — it's a
    small text file the plugin creates for you, with two blanks to fill in).
+   On that same OAuth2 page, find the **Redirects** box, add `http://127.0.0.1` and
+   save — it's a formality Discord insists on; nothing ever uses that address.
 4. A minute later, Discord itself pops up a window asking *"allow this app to control
    voice things?"* — click **Authorize**, once, and you're done forever.
 

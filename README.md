@@ -46,7 +46,10 @@ official plugin has):
 1. Go to <https://discord.com/developers/applications> → **New Application** → name it
    anything (e.g. `Loupedeck Soundboard`).
 2. Open the **OAuth2** tab. Copy the **Client ID** and reset/copy the **Client Secret**.
-   No redirect URI is needed.
+3. Still on the OAuth2 tab, under **Redirects** add `http://127.0.0.1` and save.
+   Nothing is ever opened at that address — Discord simply refuses the authorize step
+   ("Missing redirect_uri") unless the app has a redirect registered. If you register a
+   different one, set `redirect_uri` in `config.json` to match.
 
 ### 3. Configure the plugin
 
@@ -107,6 +110,8 @@ application (see Setup), which keeps every user's credentials their own.
 | --- | --- |
 | Plugin status error about `config.json` | Fill in client id/secret (step 3). |
 | "Approve the authorization popup in Discord" forever | The dialog is in the Discord app window; approve it, or press **Re-authorize Discord**. |
+| `OAuth2 Error: invalid_request: Missing "redirect_uri"` in the log | Add `http://127.0.0.1` under **OAuth2 → Redirects** in your Discord application. |
+| Authorization popup reappears | A declined/failed authorize retries after 90 s. Fix the cause (see log), or press **Re-authorize Discord** to retry immediately. |
 | Button press does nothing | You must be in a voice channel, not server-muted. Check the log below. |
 | Sound tile is dimmed | Discord reports it unavailable to you (usually a Nitro restriction on cross-server sounds). |
 | Sounds out of date | Press the **Refresh** tile or the **Refresh Sounds** action. |
