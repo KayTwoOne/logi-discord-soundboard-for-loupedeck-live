@@ -91,6 +91,10 @@ Plugin log: `%LOCALAPPDATA%\Logi\LogiPluginService\Logs\plugin_logs\DiscordSound
   [DiscordSoundboardApplication.cs](src/DiscordSoundboardPlugin/DiscordSoundboardApplication.cs)
   and you get an unexplained `Cannot load plugin` in the log. Ask me how I know.
 - `dotnet clean` removes the dev link and unloads the plugin.
-- Tokens (`token.json`) and the sound cache (`sounds.json`) live next to `config.json`.
-  The client secret and tokens are stored in plain text in your user profile — treat that
-  folder accordingly.
+- **Secrets are encrypted at rest with Windows DPAPI** (CurrentUser scope). You paste
+  `client_secret` in plaintext once; on first load the plugin rewrites it as
+  `client_secret_protected` and blanks the plaintext field. OAuth tokens are stored only as
+  an encrypted `token.bin`. The blobs are useless on any other machine or Windows account.
+  The decrypted secret exists only in plugin memory while running. (On non-Windows hosts
+  DPAPI is unavailable and storage falls back to plaintext.)
+- The sound cache (`sounds.json`) is not sensitive and stays readable.

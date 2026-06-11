@@ -18,6 +18,11 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         [JsonPropertyName("client_secret")]
         public String ClientSecret { get; set; }
 
+        // DPAPI-encrypted form of client_secret. Users paste the plaintext secret once;
+        // the plugin encrypts it here and blanks the plaintext field on first load.
+        [JsonPropertyName("client_secret_protected")]
+        public String ClientSecretProtected { get; set; }
+
         // Sound ids pinned to the top of the list ("favourites" are not exposed over RPC,
         // so the plugin keeps its own).
         [JsonPropertyName("favorite_sound_ids")]
@@ -116,11 +121,12 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         {
             try
             {
+                File.Delete(Path.Combine(this._dataDirectory, "token.bin"));
                 File.Delete(Path.Combine(this._dataDirectory, "token.json"));
             }
             catch (Exception ex)
             {
-                PluginLog.Warning(ex, "Could not delete token.json");
+                PluginLog.Warning(ex, "Could not delete the stored token");
             }
             this.Reconnect();
         }
@@ -232,7 +238,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 DiscordRpcClient client = null;
                 try
                 {
-                    var config = this.LoadJson<PluginConfig>("config.json");
+                    var config = this.LoadConfig();
                     if (String.IsNullOrEmpty(config?.ClientId) || String.IsNullOrEmpty(config?.ClientSecret))
                     {
                         this.WriteConfigTemplate();
@@ -277,9 +283,91 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             }
         }
 
+        // Reads config.json. If the user pasted a plaintext client_secret, it is encrypted
+        // with DPAPI, persisted as client_secret_protected, and blanked on disk; the
+        // decrypted secret lives only in memory from then on.
+        private PluginConfig LoadConfig()
+        {
+            var config = this.LoadJson<PluginConfig>("config.json");
+            if (config == null)
+            {
+                return null;
+            }
+
+            if (!String.IsNullOrEmpty(config.ClientSecret))
+            {
+                var protectedSecret = Dpapi.TryProtect(config.ClientSecret);
+                if (protectedSecret != null)
+                {
+                    var plaintext = config.ClientSecret;
+                    config.ClientSecretProtected = protectedSecret;
+                    config.ClientSecret = "";
+                    this.SaveJson("config.json", config);
+                    config.ClientSecret = plaintext;
+                    PluginLog.Info("client_secret encrypted at rest (client_secret_protected)");
+                }
+                return config;
+            }
+
+            if (!String.IsNullOrEmpty(config.ClientSecretProtected))
+            {
+                config.ClientSecret = Dpapi.TryUnprotect(config.ClientSecretProtected);
+                if (config.ClientSecret == null)
+                {
+                    this.SetStatus(PluginStatus.Error, $"Could not decrypt the stored client secret. Re-paste client_secret into {this.ConfigFilePath}");
+                }
+            }
+            return config;
+        }
+
+        private OAuthToken LoadToken()
+        {
+            var protectedPath = Path.Combine(this._dataDirectory, "token.bin");
+            try
+            {
+                if (File.Exists(protectedPath))
+                {
+                    var json = Dpapi.TryUnprotect(File.ReadAllText(protectedPath));
+                    return json != null ? JsonSerializer.Deserialize<OAuthToken>(json) : null;
+                }
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warning(ex, "Could not read token.bin");
+            }
+
+            // Migrate a plaintext token.json left over from older builds.
+            var legacy = this.LoadJson<OAuthToken>("token.json");
+            if (legacy != null)
+            {
+                this.SaveToken(legacy);
+            }
+            return legacy;
+        }
+
+        private void SaveToken(OAuthToken token)
+        {
+            var blob = Dpapi.TryProtect(JsonSerializer.Serialize(token, JsonOptions));
+            if (blob == null)
+            {
+                this.SaveJson("token.json", token); // DPAPI unavailable; plaintext fallback
+                return;
+            }
+
+            try
+            {
+                File.WriteAllText(Path.Combine(this._dataDirectory, "token.bin"), blob);
+                File.Delete(Path.Combine(this._dataDirectory, "token.json"));
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warning(ex, "Could not write token.bin");
+            }
+        }
+
         private async Task AuthenticateAsync(DiscordRpcClient client, PluginConfig config, CancellationToken ct)
         {
-            var token = this.LoadJson<OAuthToken>("token.json");
+            var token = this.LoadToken();
 
             if (token != null && DateTime.UtcNow >= token.ExpiresAtUtc)
             {
@@ -379,7 +467,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                     .AddSeconds(root.TryGetProperty("expires_in", out var expires) ? expires.GetDouble() : 3600)
                     .AddMinutes(-5),
             };
-            this.SaveJson("token.json", token);
+            this.SaveToken(token);
             return token;
         }
 
