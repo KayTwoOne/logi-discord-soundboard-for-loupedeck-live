@@ -86,7 +86,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
         public override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize)
             => actionParameter == RefreshParameter
                 ? SoundTile.RenderLabel("Refresh", imageSize, new BitmapColor(45, 49, 54))
-                : SoundTile.Render(this.Service?.FindSound(actionParameter), imageSize);
+                : SoundTile.Render(this.Service?.FindSound(actionParameter), imageSize, this.Service?.GetConfig());
 
         public override BitmapImage GetButtonImage(PluginImageSize imageSize)
             => SoundTile.RenderLabel("Sound\nboard", imageSize, SoundTile.Blurple);

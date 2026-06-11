@@ -25,7 +25,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             new BitmapColor(94, 70, 128),   // violet
         };
 
-        public static BitmapImage Render(SoundboardSound sound, PluginImageSize imageSize)
+        public static BitmapImage Render(SoundboardSound sound, PluginImageSize imageSize, PluginConfig config = null)
         {
             using var builder = new BitmapBuilder(imageSize);
 
@@ -36,15 +36,38 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 return builder.ToImage();
             }
 
-            var background = sound.IsDefault ? Blurple : Palette[StableHash(sound.GuildId) % Palette.Length];
+            var guildKey = sound.IsDefault ? "0" : sound.GuildId;
+            if (!(config?.TileColors != null && config.TileColors.TryGetValue(guildKey, out var hex) && TryParseHexColor(hex, out var background)))
+            {
+                background = sound.IsDefault ? Blurple : Palette[StableHash(sound.GuildId) % Palette.Length];
+            }
             if (!sound.Available)
             {
                 background = new BitmapColor(background.R / 3, background.G / 3, background.B / 3);
             }
 
+            var text = Truncate(sound.Name, 24);
+            if (config?.ShowEmoji == true && !String.IsNullOrEmpty(sound.EmojiName))
+            {
+                text = sound.EmojiName + "\n" + text;
+            }
+
             builder.Clear(background);
-            builder.DrawText(Truncate(sound.Name, 24), sound.Available ? BitmapColor.White : DimText);
+            builder.DrawText(text, sound.Available ? BitmapColor.White : DimText);
             return builder.ToImage();
+        }
+
+        // Accepts "#RRGGBB" (leading '#' optional).
+        private static Boolean TryParseHexColor(String hex, out BitmapColor color)
+        {
+            color = default;
+            var h = hex?.TrimStart('#');
+            if (h?.Length != 6 || !UInt32.TryParse(h, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var rgb))
+            {
+                return false;
+            }
+            color = new BitmapColor((Int32)((rgb >> 16) & 0xFF), (Int32)((rgb >> 8) & 0xFF), (Int32)(rgb & 0xFF));
+            return true;
         }
 
         public static BitmapImage RenderLabel(String label, PluginImageSize imageSize, BitmapColor background)

@@ -44,7 +44,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             => this.Service?.FindSound(actionParameter)?.Name ?? "Sound";
 
         protected override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize)
-            => SoundTile.Render(this.Service?.FindSound(actionParameter), imageSize);
+            => SoundTile.Render(this.Service?.FindSound(actionParameter), imageSize, this.Service?.GetConfig());
 
         private void OnSoundsChanged(Object sender, EventArgs e)
         {

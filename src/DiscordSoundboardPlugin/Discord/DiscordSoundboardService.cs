@@ -27,6 +27,30 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         // so the plugin keeps its own).
         [JsonPropertyName("favorite_sound_ids")]
         public List<String> FavoriteSoundIds { get; set; } = new List<String>();
+
+        // Guild ids whose sounds should not be listed (assigned buttons keep working).
+        [JsonPropertyName("excluded_guild_ids")]
+        public List<String> ExcludedGuildIds { get; set; } = new List<String>();
+
+        // Hide Nitro-locked/unavailable sounds instead of showing them dimmed.
+        [JsonPropertyName("hide_unavailable")]
+        public Boolean HideUnavailable { get; set; }
+
+        // "server" (group by server, default) or "name" (one flat A-Z list).
+        [JsonPropertyName("sort_mode")]
+        public String SortMode { get; set; } = "server";
+
+        // Tile colour overrides: guild id -> "#RRGGBB" ("0" targets Discord default sounds).
+        [JsonPropertyName("tile_colors")]
+        public Dictionary<String, String> TileColors { get; set; } = new Dictionary<String, String>();
+
+        // Prepend the sound's emoji to the tile text (rendering depends on device font support).
+        [JsonPropertyName("show_emoji")]
+        public Boolean ShowEmoji { get; set; }
+
+        // Ignore presses arriving within this window after a play, to absorb double-taps.
+        [JsonPropertyName("play_cooldown_ms")]
+        public Int32 PlayCooldownMs { get; set; }
     }
 
     internal sealed class OAuthToken
@@ -58,6 +82,9 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         private String _dataDirectory;
         private DiscordRpcClient _client;
         private List<SoundboardSound> _sounds = new List<SoundboardSound>();
+        private PluginConfig _configCache;
+        private DateTime _configCacheStamp;
+        private DateTime _lastPlayUtc;
 
         public event EventHandler SoundsChanged;
         public event EventHandler StatusChanged;
@@ -97,12 +124,64 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             this._http.Dispose();
         }
 
+        // Display/behaviour settings, re-read whenever config.json changes on disk, so
+        // edits apply on the next redraw without reconnecting.
+        internal PluginConfig GetConfig()
+        {
+            try
+            {
+                var path = this.ConfigFilePath;
+                var stamp = File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
+                if (this._configCache == null || stamp != this._configCacheStamp)
+                {
+                    this._configCache = this.LoadJson<PluginConfig>("config.json") ?? new PluginConfig();
+                    this._configCacheStamp = stamp;
+                }
+            }
+            catch
+            {
+                this._configCache ??= new PluginConfig();
+            }
+            return this._configCache;
+        }
+
+        // The user-facing sound list: exclusions, availability filter, sort mode and
+        // favourite pinning are applied here, at read time, over the raw indexed list.
         public IReadOnlyList<SoundboardSound> GetSounds()
         {
+            List<SoundboardSound> raw;
             lock (this._soundsLock)
             {
-                return this._sounds.ToArray();
+                raw = this._sounds.ToList();
             }
+
+            var config = this.GetConfig();
+            IEnumerable<SoundboardSound> view = raw;
+
+            if (config.ExcludedGuildIds?.Count > 0)
+            {
+                view = view.Where(s => s.IsDefault || !config.ExcludedGuildIds.Contains(s.GuildId));
+            }
+            if (config.HideUnavailable)
+            {
+                view = view.Where(s => s.Available);
+            }
+
+            var ordered = String.Equals(config.SortMode, "name", StringComparison.OrdinalIgnoreCase)
+                ? view.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList()
+                : view.OrderBy(s => s.IsDefault)
+                      .ThenBy(s => s.GroupLabel, StringComparer.OrdinalIgnoreCase)
+                      .ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                      .ToList();
+
+            var favorites = config.FavoriteSoundIds ?? new List<String>();
+            if (favorites.Count > 0)
+            {
+                var pinned = ordered.Where(s => favorites.Contains(s.SoundId)).ToList();
+                pinned.AddRange(ordered.Where(s => !favorites.Contains(s.SoundId)));
+                ordered = pinned;
+            }
+            return ordered;
         }
 
         public SoundboardSound FindSound(String key)
@@ -141,6 +220,18 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 return false;
             }
 
+            var config = this.GetConfig();
+            if (config.PlayCooldownMs > 0)
+            {
+                var now = DateTime.UtcNow;
+                if ((now - this._lastPlayUtc).TotalMilliseconds < config.PlayCooldownMs)
+                {
+                    PluginLog.Verbose($"Ignored '{sound.Name}' (within {config.PlayCooldownMs}ms cooldown)");
+                    return false;
+                }
+                this._lastPlayUtc = now;
+            }
+
             try
             {
                 var args = new Dictionary<String, Object> { ["sound_id"] = sound.SoundId };
@@ -158,6 +249,22 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 PluginLog.Warning(ex, $"Failed to play '{sound.Name}' (are you in a voice channel?)");
                 return false;
             }
+        }
+
+        public Task<Boolean> PlayRandomAsync(Boolean favoritesOnly)
+        {
+            var favorites = this.GetConfig().FavoriteSoundIds ?? new List<String>();
+            var candidates = this.GetSounds()
+                .Where(s => s.Available && (!favoritesOnly || favorites.Contains(s.SoundId)))
+                .ToList();
+            if (candidates.Count == 0)
+            {
+                PluginLog.Warning(favoritesOnly
+                    ? "No favourite sounds to pick from (favorite_sound_ids in config.json)"
+                    : "No available sounds to pick from");
+                return Task.FromResult(false);
+            }
+            return this.PlaySoundAsync(candidates[Random.Shared.Next(candidates.Count)].Key);
         }
 
         public async Task<Boolean> RefreshSoundsAsync()
@@ -205,14 +312,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                     }
                     sounds.Add(sound);
                 }
-
-                var favorites = this.LoadJson<PluginConfig>("config.json")?.FavoriteSoundIds ?? new List<String>();
-                sounds = sounds
-                    .OrderByDescending(s => favorites.Contains(s.SoundId))
-                    .ThenBy(s => s.IsDefault)
-                    .ThenBy(s => s.GroupLabel, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
 
                 lock (this._soundsLock)
                 {

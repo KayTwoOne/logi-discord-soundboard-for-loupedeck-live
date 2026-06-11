@@ -67,8 +67,25 @@ Within ~10 seconds the plugin connects and **Discord pops an authorization dialo
 ### 4. Play
 
 Join a voice channel, open the Soundboard folder on the device (or assign individual
-sounds), and press. `favorite_sound_ids` (sound ids from `sounds.json` next to the config)
-pins sounds to the front of the folder.
+sounds), and press.
+
+## Customization
+
+All options live in the same `config.json` and apply on the next redraw / folder open —
+no reconnect needed. Sound ids come from `sounds.json` next to the config.
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `favorite_sound_ids` | `[]` | Pins these sounds to the front of the folder, and feeds "Random: Favourite Sound". |
+| `excluded_guild_ids` | `[]` | Hides entire servers from the list (already-assigned buttons keep working). |
+| `hide_unavailable` | `false` | Hide Nitro-locked sounds entirely instead of showing them dimmed. |
+| `sort_mode` | `"server"` | `"server"` groups by server; `"name"` is one flat A–Z list. |
+| `tile_colors` | `{}` | Per-server button colours, e.g. `{ "123456789012345678": "#FF6600", "0": "#3BA55D" }` (`"0"` = Discord's default sounds). |
+| `show_emoji` | `false` | Prepend the sound's emoji to the tile label (rendering depends on device font support). |
+| `play_cooldown_ms` | `0` | Ignore presses within this many ms of the last play — absorbs accidental double-taps (try `750`). |
+
+There is also a **Play Random Sound** action with two variants: any sound, or favourites
+only.
 
 ## Troubleshooting
 
