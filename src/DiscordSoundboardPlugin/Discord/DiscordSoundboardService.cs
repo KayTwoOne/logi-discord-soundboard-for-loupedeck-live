@@ -91,8 +91,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         private static readonly TimeSpan FeedbackDuration = TimeSpan.FromMilliseconds(800);
         private readonly ConcurrentDictionary<String, (Boolean Success, DateTime UntilUtc)> _playFeedback =
             new ConcurrentDictionary<String, (Boolean, DateTime)>();
+        private static readonly TimeSpan EmojiRetryDelay = TimeSpan.FromMinutes(15);
         private readonly ConcurrentDictionary<String, Byte[]> _emojiMemory = new ConcurrentDictionary<String, Byte[]>();
         private readonly ConcurrentDictionary<String, Boolean> _emojiFetching = new ConcurrentDictionary<String, Boolean>();
+        private readonly ConcurrentDictionary<String, DateTime> _emojiFailedUtc = new ConcurrentDictionary<String, DateTime>();
 
         public event EventHandler SoundsChanged;
         public event EventHandler StatusChanged;
@@ -310,6 +312,12 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 }
             }
 
+            // Don't hammer the CDN from every redraw after a failure (offline, deleted emoji).
+            if (this._emojiFailedUtc.TryGetValue(emojiId, out var failedAt) && DateTime.UtcNow - failedAt < EmojiRetryDelay)
+            {
+                return null;
+            }
+
             this.FetchEmojiInBackground(emojiId, path);
             return null;
         }
@@ -329,10 +337,12 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
                     File.WriteAllBytes(path, bytes);
                     this._emojiMemory[emojiId] = bytes;
+                    this._emojiFailedUtc.TryRemove(emojiId, out _);
                     this.EmojiCacheUpdated?.Invoke(this, EventArgs.Empty);
                 }
                 catch (Exception ex)
                 {
+                    this._emojiFailedUtc[emojiId] = DateTime.UtcNow;
                     PluginLog.Warning(ex, $"Could not fetch emoji {emojiId} from Discord CDN");
                 }
                 finally
@@ -430,10 +440,18 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 try
                 {
                     var config = this.LoadConfig();
-                    if (String.IsNullOrEmpty(config?.ClientId) || String.IsNullOrEmpty(config?.ClientSecret))
+                    if (String.IsNullOrEmpty(config?.ClientId) ||
+                        (String.IsNullOrEmpty(config?.ClientSecret) && String.IsNullOrEmpty(config?.ClientSecretProtected)))
                     {
                         this.WriteConfigTemplate();
                         this.SetStatus(PluginStatus.Error, $"Add your Discord application's client_id and client_secret to {this.ConfigFilePath}");
+                        await WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (String.IsNullOrEmpty(config.ClientSecret))
+                    {
+                        // A protected secret exists but could not be decrypted;
+                        // LoadConfig already set the specific status message.
                         await WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
                         continue;
                     }
