@@ -1,0 +1,36 @@
+# Package type. Must be plugin4 for plugins.
+type: plugin4
+
+# Name that identifies the plugin (used in loupedeck: deep links, data directory etc).
+name: DiscordSoundboard
+
+# Plugin name that is shown to the user.
+displayName: Discord Soundboard
+
+# Short description of the plugin.
+description: Index your Discord soundboard sounds and play them with a button press.
+
+# Name of the plugin library file.
+pluginFileName: DiscordSoundboardPlugin.dll
+
+# Plugin version.
+version: 0.1
+
+# Author of the plugin.
+author: Kaylum
+
+copyright: Copyright © 2026 Kaylum
+
+# Minimum SDK version supported by the plugin.
+minimumLoupedeckVersion: 6.0
+
+# Location of plugin files (relative to the plugin base directory).
+pluginFolderWin: bin
+pluginFolderMac: bin
+
+# List of devices the plugin is optimized for.
+supportedDevices:
+    # Loupedeck CT, Live, Live S, Razer Stream Controller (X).
+    - LoupedeckCtFamily
+    # Logitech MX Creative Console family devices.
+    - LoupedeckExtendedFamily
