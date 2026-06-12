@@ -1,7 +1,10 @@
-bin/
 obj/
 *.csproj.user
 *.suo
 .vs/
 .vscode/
-*.lplug4
+
+# Build intermediates; the distributable bin/DiscordSoundboard.lplug4 stays tracked.
+bin/Debug/
+bin/Release/
+bin/package-stage/

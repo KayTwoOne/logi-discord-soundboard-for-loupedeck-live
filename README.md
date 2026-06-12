@@ -11,15 +11,11 @@ mute/deafen).
 ## What you get
 
 - **Soundboard folder** — a paged grid of every indexed sound on the device's touch screen,
-  colour-coded per server. Paging is on the physical dials by default (no swiping across
-  live sound tiles); set `folder_navigation` to `"buttons"` for on-grid arrows instead.
-  Control tiles: voice status, Refresh, and Preview mode.
+  colour-coded per server, plus a Refresh tile. Paging is on the physical dials by default
+  (no swiping across live sound tiles); set `folder_navigation` to `"buttons"` for on-grid
+  arrows instead.
 - **Tap to play, hold to favourite** — long-press any sound tile (in the folder or on an
   assigned button) to toggle it as a favourite; favourites show a ★ and sort first.
-- **Voice awareness** — a status tile shows your current voice channel (or "Not in voice"),
-  sound tiles dim when a press can't succeed, and such presses fail fast.
-- **Preview mode** — toggle the Preview tile, then taps play sounds through your own
-  speakers/headphones only (cached from Discord's CDN; some formats may not decode).
 - **Favourite Sound Dial** — rotate a dial to pick a favourite (name on the dial display),
   press to play.
 - **Play Sound actions** — every sound is also an individually assignable action, grouped by

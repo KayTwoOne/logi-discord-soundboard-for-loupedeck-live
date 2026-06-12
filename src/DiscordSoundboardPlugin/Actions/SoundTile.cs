@@ -29,7 +29,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
         private static readonly BitmapColor FlashFailure = new BitmapColor(218, 62, 82);
         private static readonly BitmapColor FavoriteStar = new BitmapColor(255, 200, 60);
 
-        public static BitmapImage Render(SoundboardSound sound, PluginImageSize imageSize, PluginConfig config = null, Boolean? playFeedback = null, Byte[] emojiImage = null, Boolean isFavorite = false, Boolean dimmed = false)
+        public static BitmapImage Render(SoundboardSound sound, PluginImageSize imageSize, PluginConfig config = null, Boolean? playFeedback = null, Byte[] emojiImage = null, Boolean isFavorite = false)
         {
             using var builder = new BitmapBuilder(imageSize);
 
@@ -55,11 +55,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 if (!sound.Available)
                 {
                     background = new BitmapColor(background.R / 3, background.G / 3, background.B / 3);
-                }
-                else if (dimmed)
-                {
-                    // Muted treatment while not in a voice channel: presses cannot succeed.
-                    background = new BitmapColor(background.R * 55 / 100, background.G * 55 / 100, background.B * 55 / 100);
                 }
             }
 

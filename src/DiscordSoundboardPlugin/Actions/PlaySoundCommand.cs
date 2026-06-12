@@ -29,7 +29,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 service.SoundsChanged += this.OnSoundsChanged;
                 service.PlayAttempted += this.OnPlayAttempted;
                 service.EmojiCacheUpdated += this.OnEmojiCacheUpdated;
-                service.VoiceStateChanged += this.OnVoiceStateChanged;
                 this.RebuildParameterList();
             }
             return true;
@@ -43,7 +42,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 service.SoundsChanged -= this.OnSoundsChanged;
                 service.PlayAttempted -= this.OnPlayAttempted;
                 service.EmojiCacheUpdated -= this.OnEmojiCacheUpdated;
-                service.VoiceStateChanged -= this.OnVoiceStateChanged;
             }
             return true;
         }
@@ -85,7 +83,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             }
         }
 
-        private void OnVoiceStateChanged(Object sender, EventArgs e) => this.ActionImageChanged();
 
         protected override void RunCommand(String actionParameter)
             => _ = this.Service?.PlaySoundAsync(actionParameter);
@@ -99,9 +96,8 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             var sound = service?.FindSound(actionParameter);
             var config = service?.GetConfig();
             var emoji = config?.ShowEmoji == true ? service?.GetEmojiImage(sound?.EmojiId) : null;
-            var dimmed = service?.IsConnected == true && service.VoiceTrackingActive && !service.InVoiceChannel;
             return SoundTile.Render(sound, imageSize, config, service?.GetPlayFeedback(actionParameter), emoji,
-                service?.IsFavorite(sound?.SoundId) == true, dimmed);
+                service?.IsFavorite(sound?.SoundId) == true);
         }
 
         // Redraw the pressed tile for the flash, then again once the flash window passes.

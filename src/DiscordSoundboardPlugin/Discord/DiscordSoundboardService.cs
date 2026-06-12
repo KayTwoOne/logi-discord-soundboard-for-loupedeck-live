@@ -117,9 +117,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         // Raised when a custom emoji image finishes downloading.
         public event EventHandler EmojiCacheUpdated;
 
-        // Raised when voice-channel state changes (joined/left/moved).
-        public event EventHandler VoiceStateChanged;
-
         public PluginStatus Status { get; private set; } = PluginStatus.Warning;
 
         public String StatusMessage { get; private set; } = "Starting";
@@ -135,8 +132,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         public Boolean VoiceTrackingActive { get; private set; }
 
         public Boolean InVoiceChannel { get; private set; }
-
-        public String CurrentVoiceChannelName { get; private set; }
 
         public String ConfigFilePath => Path.Combine(this._dataDirectory ?? "", "config.json");
 
@@ -854,8 +849,8 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         }
 
         // Subscribes to voice-channel changes and seeds the current state, so the sound
-        // list can keep the active server's sounds at the front as the user hops channels
-        // and tiles can reflect whether a press can succeed at all.
+        // list can keep the active server's sounds at the front as the user hops
+        // channels, and plays can fail fast when no voice channel is joined.
         private async Task TrackVoiceChannelAsync(DiscordRpcClient client)
         {
             try
@@ -863,45 +858,18 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 using (await client.RequestAsync("SUBSCRIBE", null, evt: "VOICE_CHANNEL_SELECT").ConfigureAwait(false))
                 {
                 }
-                await this.QueryVoiceStateAsync(client).ConfigureAwait(false);
+
+                using var doc = await client.RequestAsync("GET_SELECTED_VOICE_CHANNEL", null).ConfigureAwait(false);
+                var data = doc.RootElement.GetProperty("data");
+                this.SetVoiceState(
+                    data.ValueKind == JsonValueKind.Object,
+                    data.ValueKind == JsonValueKind.Object ? GetSnowflakeOrString(data, "guild_id") : null);
                 this.VoiceTrackingActive = true;
             }
             catch (Exception ex)
             {
                 this.VoiceTrackingActive = false;
                 PluginLog.Warning(ex, "Could not track the current voice channel; sounds will not follow the active server");
-            }
-        }
-
-        private async Task QueryVoiceStateAsync(DiscordRpcClient client)
-        {
-            using var doc = await client.RequestAsync("GET_SELECTED_VOICE_CHANNEL", null).ConfigureAwait(false);
-            var data = doc.RootElement.GetProperty("data");
-            if (data.ValueKind == JsonValueKind.Object)
-            {
-                this.SetVoiceState(true, GetSnowflakeOrString(data, "guild_id"), GetSnowflakeOrString(data, "name"));
-            }
-            else
-            {
-                this.SetVoiceState(false, null, null);
-            }
-        }
-
-        // Re-checks the current voice channel on demand (status tile press).
-        public async Task RefreshVoiceStateAsync()
-        {
-            var client = this._client;
-            if (client?.IsConnected != true)
-            {
-                return;
-            }
-            try
-            {
-                await this.QueryVoiceStateAsync(client).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                PluginLog.Warning(ex, "Could not refresh voice state");
             }
         }
 
@@ -920,19 +888,12 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 guildId = GetSnowflakeOrString(data, "guild_id");
                 channelId = GetSnowflakeOrString(data, "channel_id");
             }
-            this.SetVoiceState(channelId != null, guildId, null);
-
-            // The event payload has no channel name; fetch it in the background.
-            if (channelId != null)
-            {
-                _ = this.RefreshVoiceStateAsync();
-            }
+            this.SetVoiceState(channelId != null, guildId);
         }
 
-        private void SetVoiceState(Boolean inVoice, String guildId, String channelName)
+        private void SetVoiceState(Boolean inVoice, String guildId)
         {
-            var changed = this.InVoiceChannel != inVoice || this.CurrentVoiceGuildId != guildId || this.CurrentVoiceChannelName != channelName;
-            if (!changed)
+            if (this.InVoiceChannel == inVoice && this.CurrentVoiceGuildId == guildId)
             {
                 return;
             }
@@ -940,15 +901,11 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             var guildChanged = this.CurrentVoiceGuildId != guildId;
             this.InVoiceChannel = inVoice;
             this.CurrentVoiceGuildId = guildId;
-            this.CurrentVoiceChannelName = channelName;
-            PluginLog.Info($"Voice state: {(inVoice ? $"in '{channelName ?? channelId(guildId)}'" : "not in voice")}");
-            this.VoiceStateChanged?.Invoke(this, EventArgs.Empty);
+            PluginLog.Info($"Voice state: {(inVoice ? $"in voice{(guildId != null ? $" (guild {guildId})" : "")}" : "not in voice")}");
             if (guildChanged)
             {
                 this.SoundsChanged?.Invoke(this, EventArgs.Empty);
             }
-
-            static String channelId(String g) => g != null ? $"guild {g}" : "a voice channel";
         }
 
         private async Task<Dictionary<String, String>> FetchGuildNamesAsync(DiscordRpcClient client)
