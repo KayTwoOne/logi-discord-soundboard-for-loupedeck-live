@@ -24,10 +24,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         [JsonPropertyName("client_secret_protected")]
         public String ClientSecretProtected { get; set; }
 
-        // Discord requires a registered redirect URI for the authorize step even though
-        // nothing is ever opened. Must match one registered under OAuth2 -> Redirects.
-        [JsonPropertyName("redirect_uri")]
-        public String RedirectUri { get; set; } = "http://127.0.0.1";
 
         // Sound ids pinned to the top of the list ("favourites" are not exposed over RPC,
         // so the plugin keeps its own).
@@ -613,16 +609,16 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 }
 
                 this.SetStatus(PluginStatus.Warning, "Approve the authorization popup in Discord");
+                // The application must have a redirect URI registered, and response_type
+                // must be sent for Discord to default to it — but the IPC transport
+                // forbids actually sending redirect_uri itself.
                 var authorizeArgs = new Dictionary<String, Object>
                 {
                     ["client_id"] = config.ClientId,
+                    ["response_type"] = "code",
                     ["scopes"] = OAuthScopes,
                     ["prompt"] = "consent",
                 };
-                if (!String.IsNullOrEmpty(config.RedirectUri))
-                {
-                    authorizeArgs["redirect_uri"] = config.RedirectUri;
-                }
 
                 JsonDocument authorizeDoc;
                 try
@@ -641,16 +637,11 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                     code = authorizeDoc.RootElement.GetProperty("data").GetProperty("code").GetString();
                 }
 
-                var exchangeArgs = new Dictionary<String, String>
+                token = await this.ExchangeTokenAsync(config, new Dictionary<String, String>
                 {
                     ["grant_type"] = "authorization_code",
                     ["code"] = code,
-                };
-                if (!String.IsNullOrEmpty(config.RedirectUri))
-                {
-                    exchangeArgs["redirect_uri"] = config.RedirectUri;
-                }
-                token = await this.ExchangeTokenAsync(config, exchangeArgs, ct).ConfigureAwait(false);
+                }, ct).ConfigureAwait(false);
                 this._authorizeBackoffUntilUtc = DateTime.MinValue;
 
                 if (!await TryAuthenticateAsync(client, token).ConfigureAwait(false))

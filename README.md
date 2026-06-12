@@ -47,9 +47,10 @@ official plugin has):
    anything (e.g. `Loupedeck Soundboard`).
 2. Open the **OAuth2** tab. Copy the **Client ID** and reset/copy the **Client Secret**.
 3. Still on the OAuth2 tab, under **Redirects** add `http://127.0.0.1` and save.
-   Nothing is ever opened at that address — Discord simply refuses the authorize step
-   ("Missing redirect_uri") unless the app has a redirect registered. If you register a
-   different one, set `redirect_uri` in `config.json` to match.
+   Nothing is ever opened at that address — Discord refuses the authorize step
+   ("Missing redirect_uri") unless the app has a redirect registered, yet also rejects
+   requests that actually *send* one, so the plugin never transmits it. Any URL works;
+   it just has to exist.
 
 ### 3. Configure the plugin
 
