@@ -46,6 +46,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
 
         public event EventHandler<String> Closed;
 
+        // Unsolicited DISPATCH frames (subscribed events). Handlers must read the document
+        // synchronously; it is disposed when the invocation returns.
+        public event EventHandler<JsonDocument> DispatchReceived;
+
         public DiscordRpcClient(String clientId) => this._clientId = clientId;
 
         public Boolean IsConnected => !this._disposed && this._pipe?.IsConnected == true;
@@ -95,7 +99,8 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             }
         }
 
-        public async Task<JsonDocument> RequestAsync(String cmd, Object args, Int32 timeoutSeconds = 15)
+        // `evt` is the top-level event field used by SUBSCRIBE/UNSUBSCRIBE commands.
+        public async Task<JsonDocument> RequestAsync(String cmd, Object args, Int32 timeoutSeconds = 15, String evt = null)
         {
             if (!this.IsConnected)
             {
@@ -107,12 +112,17 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             this._pending[nonce] = tcs;
             try
             {
-                this.SendFrame(IpcOpcode.Frame, JsonSerializer.Serialize(new Dictionary<String, Object>
+                var payload = new Dictionary<String, Object>
                 {
                     ["cmd"] = cmd,
                     ["args"] = args ?? new Dictionary<String, Object>(),
                     ["nonce"] = nonce,
-                }));
+                };
+                if (evt != null)
+                {
+                    payload["evt"] = evt;
+                }
+                this.SendFrame(IpcOpcode.Frame, JsonSerializer.Serialize(payload));
 
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
                 using (timeout.Token.Register(() => tcs.TrySetException(new TimeoutException($"Discord did not answer {cmd} within {timeoutSeconds}s"))))
@@ -231,7 +241,16 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 return;
             }
 
-            // Unsolicited dispatch event we are not interested in.
+            if (evt != null)
+            {
+                try
+                {
+                    this.DispatchReceived?.Invoke(this, doc);
+                }
+                catch
+                {
+                }
+            }
             doc.Dispose();
         }
 

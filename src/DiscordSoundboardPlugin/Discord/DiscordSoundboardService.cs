@@ -38,9 +38,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         [JsonPropertyName("hide_unavailable")]
         public Boolean HideUnavailable { get; set; }
 
-        // "server" (group by server, default) or "name" (one flat A-Z list).
+        // "discord" (default): client's own order with your current voice server's sounds
+        // first. "server": grouped by server name A-Z. "name": one flat A-Z list.
         [JsonPropertyName("sort_mode")]
-        public String SortMode { get; set; } = "server";
+        public String SortMode { get; set; } = "discord";
 
         // Tile colour overrides: guild id -> "#RRGGBB" ("0" targets Discord default sounds).
         [JsonPropertyName("tile_colors")]
@@ -112,6 +113,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         public String StatusMessage { get; private set; } = "Starting";
 
         public Boolean IsConnected => this._client?.IsConnected == true;
+
+        // Guild id of the voice channel the user is currently connected to, or null.
+        // Tracked live via the VOICE_CHANNEL_SELECT subscription.
+        public String CurrentVoiceGuildId { get; private set; }
 
         public String ConfigFilePath => Path.Combine(this._dataDirectory ?? "", "config.json");
 
@@ -185,12 +190,28 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 view = view.Where(s => s.Available);
             }
 
-            var ordered = String.Equals(config.SortMode, "name", StringComparison.OrdinalIgnoreCase)
-                ? view.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList()
-                : view.OrderBy(s => s.IsDefault)
-                      .ThenBy(s => s.GroupLabel, StringComparer.OrdinalIgnoreCase)
-                      .ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
-                      .ToList();
+            List<SoundboardSound> ordered;
+            if (String.Equals(config.SortMode, "name", StringComparison.OrdinalIgnoreCase))
+            {
+                ordered = view.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            }
+            else if (String.Equals(config.SortMode, "server", StringComparison.OrdinalIgnoreCase))
+            {
+                ordered = view.OrderBy(s => s.IsDefault)
+                              .ThenBy(s => s.GroupLabel, StringComparer.OrdinalIgnoreCase)
+                              .ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                              .ToList();
+            }
+            else
+            {
+                // "discord": current voice server's sounds first, then other servers in
+                // the client's own order, then Discord's default sounds last.
+                var clientOrder = view.ToList();
+                var currentGuild = this.CurrentVoiceGuildId;
+                ordered = clientOrder.Where(s => !s.IsDefault && s.GuildId == currentGuild).ToList();
+                ordered.AddRange(clientOrder.Where(s => !s.IsDefault && s.GuildId != currentGuild));
+                ordered.AddRange(clientOrder.Where(s => s.IsDefault));
+            }
 
             var favorites = config.FavoriteSoundIds ?? new List<String>();
             if (favorites.Count > 0)
@@ -398,6 +419,16 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                     throw new DiscordRpcException("Unexpected GET_SOUNDBOARD_SOUNDS response shape");
                 }
 
+                // Raw response kept on disk for debugging and for inspecting fields the
+                // client returns beyond what we parse (ordering, flags, etc).
+                try
+                {
+                    File.WriteAllText(Path.Combine(this._dataDirectory, "sounds_raw.json"), data.GetRawText());
+                }
+                catch
+                {
+                }
+
                 var sounds = new List<SoundboardSound>();
                 foreach (var item in array.EnumerateArray())
                 {
@@ -473,6 +504,8 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                     this._client = client;
 
                     await this.AuthenticateAsync(client, config, ct).ConfigureAwait(false);
+                    client.DispatchReceived += this.OnDispatchReceived;
+                    await this.TrackVoiceChannelAsync(client).ConfigureAwait(false);
                     await this.RefreshSoundsAsync().ConfigureAwait(false);
                     this.SetStatus(PluginStatus.Normal, "Connected to Discord");
 
@@ -719,6 +752,53 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             return token;
         }
 
+        // Subscribes to voice-channel changes and seeds the current state, so the sound
+        // list can keep the active server's sounds at the front as the user hops channels.
+        private async Task TrackVoiceChannelAsync(DiscordRpcClient client)
+        {
+            try
+            {
+                using (await client.RequestAsync("SUBSCRIBE", null, evt: "VOICE_CHANNEL_SELECT").ConfigureAwait(false))
+                {
+                }
+
+                using var doc = await client.RequestAsync("GET_SELECTED_VOICE_CHANNEL", null).ConfigureAwait(false);
+                var data = doc.RootElement.GetProperty("data");
+                this.SetCurrentVoiceGuild(data.ValueKind == JsonValueKind.Object ? GetSnowflakeOrString(data, "guild_id") : null);
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warning(ex, "Could not track the current voice channel; sounds will not follow the active server");
+            }
+        }
+
+        private void OnDispatchReceived(Object sender, JsonDocument doc)
+        {
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("evt", out var evtProp) || evtProp.GetString() != "VOICE_CHANNEL_SELECT")
+            {
+                return;
+            }
+
+            String guildId = null;
+            if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
+            {
+                guildId = GetSnowflakeOrString(data, "guild_id");
+            }
+            this.SetCurrentVoiceGuild(guildId);
+        }
+
+        private void SetCurrentVoiceGuild(String guildId)
+        {
+            if (this.CurrentVoiceGuildId == guildId)
+            {
+                return;
+            }
+            this.CurrentVoiceGuildId = guildId;
+            PluginLog.Info($"Current voice guild: {guildId ?? "(none)"}");
+            this.SoundsChanged?.Invoke(this, EventArgs.Empty);
+        }
+
         private async Task<Dictionary<String, String>> FetchGuildNamesAsync(DiscordRpcClient client)
         {
             var names = new Dictionary<String, String>();
@@ -789,6 +869,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
 
         private T LoadJson<T>(String fileName) where T : class
         {
+            if (this._dataDirectory == null)
+            {
+                return null; // before Start(); nothing on disk to read yet
+            }
             try
             {
                 var path = Path.Combine(this._dataDirectory, fileName);
@@ -803,6 +887,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
 
         private void SaveJson<T>(String fileName, T value)
         {
+            if (this._dataDirectory == null)
+            {
+                return;
+            }
             try
             {
                 File.WriteAllText(Path.Combine(this._dataDirectory, fileName), JsonSerializer.Serialize(value, JsonOptions));

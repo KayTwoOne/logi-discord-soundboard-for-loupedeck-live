@@ -83,7 +83,7 @@ no reconnect needed. Sound ids come from `sounds.json` next to the config.
 | `favorite_sound_ids` | `[]` | Pins these sounds to the front of the folder, and feeds "Random: Favourite Sound". |
 | `excluded_guild_ids` | `[]` | Hides entire servers from the list (already-assigned buttons keep working). |
 | `hide_unavailable` | `false` | Hide Nitro-locked sounds entirely instead of showing them dimmed. |
-| `sort_mode` | `"server"` | `"server"` groups by server; `"name"` is one flat A–Z list. |
+| `sort_mode` | `"discord"` | `"discord"` keeps Discord's own order with the server you're currently in voice with floated to the front (updates live as you switch channels) and default sounds last; `"server"` groups by server name A–Z; `"name"` is one flat A–Z list. Favourites are always pinned first. |
 | `tile_colors` | `{}` | Per-server button colours, e.g. `{ "123456789012345678": "#FF6600", "0": "#3BA55D" }` (`"0"` = Discord's default sounds). |
 | `show_emoji` | `true` | Show each sound's emoji on its tile. Custom (uploaded) server emoji are downloaded from Discord's CDN and drawn as real images (cached in the plugin data folder); unicode emoji fall back to a text line. |
 | `play_cooldown_ms` | `0` | Ignore presses within this many ms of the last play — absorbs accidental double-taps (try `750`). |
