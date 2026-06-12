@@ -11,8 +11,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
     using System.Threading;
     using System.Threading.Tasks;
 
-    using NAudio.Wave;
-
     internal sealed class PluginConfig
     {
         [JsonPropertyName("client_id")]
@@ -98,10 +96,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         private DateTime _lastPlayUtc;
         private DateTime _authorizeBackoffUntilUtc;
 
-        private readonly Object _previewLock = new Object();
-        private WaveOutEvent _previewOutput;
-        private MediaFoundationReader _previewReader;
-
         private static readonly TimeSpan FeedbackDuration = TimeSpan.FromMilliseconds(800);
         // Touch tiles can surface a single physical press through more than one event
         // path; identical actions within this window are treated as the same press.
@@ -171,10 +165,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             this._cts.Cancel();
             this._client?.Dispose();
             this._http.Dispose();
-            lock (this._previewLock)
-            {
-                this.StopPreviewLocked();
-            }
         }
 
         // Display/behaviour settings, re-read whenever config.json changes on disk, so
@@ -488,89 +478,6 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                     this._emojiFetching.TryRemove(emojiId, out _);
                 }
             });
-        }
-
-        // Plays the sound locally through the PC's speakers/headphones instead of the
-        // voice channel — the "what was this one again?" button. Files come from
-        // Discord's CDN and are cached on disk. Decoding uses Windows Media Foundation,
-        // so some formats may be unsupported; failures flash red and log the reason.
-        public async Task<Boolean> PreviewSoundAsync(String key)
-        {
-            if (this.IsDuplicateAction("preview:" + key))
-            {
-                return false;
-            }
-
-            var sound = this.FindSound(key);
-            if (sound == null || this._dataDirectory == null || !sound.SoundId.All(Char.IsDigit))
-            {
-                this.SetPlayFeedback(key, false);
-                return false;
-            }
-
-            try
-            {
-                var path = Path.Combine(this._dataDirectory, "preview", sound.SoundId + ".audio");
-                if (!File.Exists(path))
-                {
-                    var bytes = await this._http.GetByteArrayAsync($"https://cdn.discordapp.com/soundboard-sounds/{sound.SoundId}").ConfigureAwait(false);
-                    Directory.CreateDirectory(Path.GetDirectoryName(path));
-                    File.WriteAllBytes(path, bytes);
-                }
-
-                this.StartPreviewPlayback(path);
-                PluginLog.Info($"Previewing '{sound.Name}' locally");
-                this.SetPlayFeedback(key, true);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                PluginLog.Warning(ex, $"Could not preview '{sound.Name}' (format may be unsupported by Media Foundation)");
-                this.SetPlayFeedback(key, false);
-                return false;
-            }
-        }
-
-        private void StartPreviewPlayback(String path)
-        {
-            lock (this._previewLock)
-            {
-                this.StopPreviewLocked();
-
-                var reader = new MediaFoundationReader(path);
-                var output = new WaveOutEvent();
-                output.Init(reader);
-                output.PlaybackStopped += (_, _) =>
-                {
-                    lock (this._previewLock)
-                    {
-                        if (ReferenceEquals(this._previewOutput, output))
-                        {
-                            this._previewOutput = null;
-                            this._previewReader = null;
-                        }
-                        output.Dispose();
-                        reader.Dispose();
-                    }
-                };
-                this._previewOutput = output;
-                this._previewReader = reader;
-                output.Play();
-            }
-        }
-
-        private void StopPreviewLocked()
-        {
-            try
-            {
-                this._previewOutput?.Dispose();
-                this._previewReader?.Dispose();
-            }
-            catch
-            {
-            }
-            this._previewOutput = null;
-            this._previewReader = null;
         }
 
         public Task<Boolean> PlayRandomAsync(Boolean favoritesOnly)
