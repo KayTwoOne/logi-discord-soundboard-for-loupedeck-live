@@ -10,6 +10,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
 
     public class PlaySoundCommand : PluginDynamicCommand
     {
+        private const Int32 LongPressMs = 500;
+
+        private readonly System.Collections.Generic.HashSet<String> _longPressHandled = new System.Collections.Generic.HashSet<String>();
+
         private DiscordSoundboardService Service => (this.Plugin as DiscordSoundboardPlugin)?.Soundboard;
 
         public PlaySoundCommand()
@@ -25,6 +29,7 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 service.SoundsChanged += this.OnSoundsChanged;
                 service.PlayAttempted += this.OnPlayAttempted;
                 service.EmojiCacheUpdated += this.OnEmojiCacheUpdated;
+                service.VoiceStateChanged += this.OnVoiceStateChanged;
                 this.RebuildParameterList();
             }
             return true;
@@ -38,9 +43,49 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 service.SoundsChanged -= this.OnSoundsChanged;
                 service.PlayAttempted -= this.OnPlayAttempted;
                 service.EmojiCacheUpdated -= this.OnEmojiCacheUpdated;
+                service.VoiceStateChanged -= this.OnVoiceStateChanged;
             }
             return true;
         }
+
+        // Tap = play, long-press = toggle favourite (same gesture as inside the folder).
+        protected override Boolean ProcessButtonEvent2(String actionParameter, DeviceButtonEvent2 buttonEvent)
+        {
+            switch (buttonEvent.EventType)
+            {
+                case DeviceButtonEventType.Press:
+                    this._longPressHandled.Remove(actionParameter);
+                    return true;
+                case DeviceButtonEventType.LongPress:
+                    this._longPressHandled.Add(actionParameter);
+                    this.ToggleFavorite(actionParameter);
+                    return true;
+                case DeviceButtonEventType.Release:
+                    if (buttonEvent.PressDuration < LongPressMs)
+                    {
+                        this.RunCommand(actionParameter);
+                    }
+                    else if (!this._longPressHandled.Remove(actionParameter))
+                    {
+                        this.ToggleFavorite(actionParameter);
+                    }
+                    return true;
+                default:
+                    return true;
+            }
+        }
+
+        private void ToggleFavorite(String actionParameter)
+        {
+            var service = this.Service;
+            var sound = service?.FindSound(actionParameter);
+            if (sound != null)
+            {
+                service.ToggleFavorite(sound.SoundId);
+            }
+        }
+
+        private void OnVoiceStateChanged(Object sender, EventArgs e) => this.ActionImageChanged();
 
         protected override void RunCommand(String actionParameter)
             => _ = this.Service?.PlaySoundAsync(actionParameter);
@@ -54,7 +99,9 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
             var sound = service?.FindSound(actionParameter);
             var config = service?.GetConfig();
             var emoji = config?.ShowEmoji == true ? service?.GetEmojiImage(sound?.EmojiId) : null;
-            return SoundTile.Render(sound, imageSize, config, service?.GetPlayFeedback(actionParameter), emoji);
+            var dimmed = service?.IsConnected == true && service.VoiceTrackingActive && !service.InVoiceChannel;
+            return SoundTile.Render(sound, imageSize, config, service?.GetPlayFeedback(actionParameter), emoji,
+                service?.IsFavorite(sound?.SoundId) == true, dimmed);
         }
 
         // Redraw the pressed tile for the flash, then again once the flash window passes.

@@ -27,8 +27,9 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
 
         private static readonly BitmapColor FlashSuccess = new BitmapColor(59, 165, 93);
         private static readonly BitmapColor FlashFailure = new BitmapColor(218, 62, 82);
+        private static readonly BitmapColor FavoriteStar = new BitmapColor(255, 200, 60);
 
-        public static BitmapImage Render(SoundboardSound sound, PluginImageSize imageSize, PluginConfig config = null, Boolean? playFeedback = null, Byte[] emojiImage = null)
+        public static BitmapImage Render(SoundboardSound sound, PluginImageSize imageSize, PluginConfig config = null, Boolean? playFeedback = null, Byte[] emojiImage = null, Boolean isFavorite = false, Boolean dimmed = false)
         {
             using var builder = new BitmapBuilder(imageSize);
 
@@ -55,6 +56,11 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                 {
                     background = new BitmapColor(background.R / 3, background.G / 3, background.B / 3);
                 }
+                else if (dimmed)
+                {
+                    // Muted treatment while not in a voice channel: presses cannot succeed.
+                    background = new BitmapColor(background.R * 55 / 100, background.G * 55 / 100, background.B * 55 / 100);
+                }
             }
 
             builder.Clear(background);
@@ -78,6 +84,12 @@ namespace Loupedeck.DiscordSoundboardPlugin.Actions
                     text = sound.EmojiName + "\n" + text;
                 }
                 builder.DrawText(text, textColor);
+            }
+
+            if (isFavorite)
+            {
+                var starSize = builder.Height * 24 / 100;
+                builder.DrawText("★", builder.Width - starSize - 2, 0, starSize, starSize, FavoriteStar, fontSize: starSize * 80 / 100);
             }
             return builder.ToImage();
         }

@@ -11,6 +11,8 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
     using System.Threading;
     using System.Threading.Tasks;
 
+    using NAudio.Wave;
+
     internal sealed class PluginConfig
     {
         [JsonPropertyName("client_id")]
@@ -42,6 +44,11 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         // first. "server": grouped by server name A-Z. "name": one flat A-Z list.
         [JsonPropertyName("sort_mode")]
         public String SortMode { get; set; } = "discord";
+
+        // "encoder" (default): folder paging via the physical dials, keeping the whole
+        // touch grid for sounds. "buttons": paging arrows on the touch grid instead.
+        [JsonPropertyName("folder_navigation")]
+        public String FolderNavigation { get; set; } = "encoder";
 
         // Tile colour overrides: guild id -> "#RRGGBB" ("0" targets Discord default sounds).
         [JsonPropertyName("tile_colors")]
@@ -91,7 +98,15 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         private DateTime _lastPlayUtc;
         private DateTime _authorizeBackoffUntilUtc;
 
+        private readonly Object _previewLock = new Object();
+        private WaveOutEvent _previewOutput;
+        private MediaFoundationReader _previewReader;
+
         private static readonly TimeSpan FeedbackDuration = TimeSpan.FromMilliseconds(800);
+        // Touch tiles can surface a single physical press through more than one event
+        // path; identical actions within this window are treated as the same press.
+        private static readonly TimeSpan DuplicatePressWindow = TimeSpan.FromMilliseconds(300);
+        private readonly ConcurrentDictionary<String, DateTime> _recentActionUtc = new ConcurrentDictionary<String, DateTime>();
         private readonly ConcurrentDictionary<String, (Boolean Success, DateTime UntilUtc)> _playFeedback =
             new ConcurrentDictionary<String, (Boolean, DateTime)>();
         private static readonly TimeSpan EmojiRetryDelay = TimeSpan.FromMinutes(15);
@@ -108,6 +123,9 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         // Raised when a custom emoji image finishes downloading.
         public event EventHandler EmojiCacheUpdated;
 
+        // Raised when voice-channel state changes (joined/left/moved).
+        public event EventHandler VoiceStateChanged;
+
         public PluginStatus Status { get; private set; } = PluginStatus.Warning;
 
         public String StatusMessage { get; private set; } = "Starting";
@@ -117,6 +135,14 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         // Guild id of the voice channel the user is currently connected to, or null.
         // Tracked live via the VOICE_CHANNEL_SELECT subscription.
         public String CurrentVoiceGuildId { get; private set; }
+
+        // Whether voice-channel tracking is live; when false (subscribe failed) the
+        // plugin must not fast-fail plays based on InVoiceChannel.
+        public Boolean VoiceTrackingActive { get; private set; }
+
+        public Boolean InVoiceChannel { get; private set; }
+
+        public String CurrentVoiceChannelName { get; private set; }
 
         public String ConfigFilePath => Path.Combine(this._dataDirectory ?? "", "config.json");
 
@@ -145,6 +171,10 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             this._cts.Cancel();
             this._client?.Dispose();
             this._http.Dispose();
+            lock (this._previewLock)
+            {
+                this.StopPreviewLocked();
+            }
         }
 
         // Display/behaviour settings, re-read whenever config.json changes on disk, so
@@ -255,11 +285,23 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
 
         public async Task<Boolean> PlaySoundAsync(String key)
         {
+            if (this.IsDuplicateAction("play:" + key))
+            {
+                return false;
+            }
+
             var client = this._client;
             var sound = this.FindSound(key);
             if (client?.IsConnected != true || sound == null)
             {
                 PluginLog.Warning($"Cannot play '{key}': {(sound == null ? "unknown sound" : "not connected to Discord")}");
+                this.SetPlayFeedback(key, false);
+                return false;
+            }
+
+            if (this.VoiceTrackingActive && !this.InVoiceChannel)
+            {
+                PluginLog.Warning($"Not playing '{sound.Name}': you are not in a voice channel");
                 this.SetPlayFeedback(key, false);
                 return false;
             }
@@ -296,6 +338,75 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 this.SetPlayFeedback(key, false);
                 return false;
             }
+        }
+
+        // True when the same logical action arrived twice within the duplicate window
+        // (touch tiles can deliver one press via both button and touch event paths).
+        private Boolean IsDuplicateAction(String actionKey)
+        {
+            var now = DateTime.UtcNow;
+            if (this._recentActionUtc.TryGetValue(actionKey, out var last) && now - last < DuplicatePressWindow)
+            {
+                return true;
+            }
+            this._recentActionUtc[actionKey] = now;
+            return false;
+        }
+
+        public Boolean IsFavorite(String soundId)
+            => soundId != null && (this.GetConfig().FavoriteSoundIds?.Contains(soundId) ?? false);
+
+        // Adds/removes a sound from the favourites list in config.json. Returns the new state.
+        public Boolean ToggleFavorite(String soundId)
+        {
+            var favorite = this.IsFavorite(soundId);
+            if (this.IsDuplicateAction("fav:" + soundId))
+            {
+                return favorite;
+            }
+
+            var config = this.LoadJson<PluginConfig>("config.json") ?? new PluginConfig();
+            config.FavoriteSoundIds ??= new List<String>();
+            if (favorite)
+            {
+                config.FavoriteSoundIds.Remove(soundId);
+            }
+            else
+            {
+                config.FavoriteSoundIds.Add(soundId);
+            }
+            this.SaveJson("config.json", config);
+            PluginLog.Info($"{(favorite ? "Unfavourited" : "Favourited")} sound {soundId}");
+            this.SoundsChanged?.Invoke(this, EventArgs.Empty);
+            return !favorite;
+        }
+
+        public IReadOnlyList<SoundboardSound> GetFavoriteSounds()
+        {
+            var favorites = this.GetConfig().FavoriteSoundIds ?? new List<String>();
+            return this.GetSounds().Where(s => favorites.Contains(s.SoundId)).ToList();
+        }
+
+        // Applies credentials entered via the in-app Setup action. The plaintext secret
+        // is written once and encrypted by the connection loop's next config read.
+        public Boolean ApplyCredentials(String clientId, String clientSecret)
+        {
+            if (String.IsNullOrWhiteSpace(clientId))
+            {
+                return false;
+            }
+
+            var config = this.LoadJson<PluginConfig>("config.json") ?? new PluginConfig();
+            config.ClientId = clientId.Trim();
+            if (!String.IsNullOrWhiteSpace(clientSecret))
+            {
+                config.ClientSecret = clientSecret.Trim();
+                config.ClientSecretProtected = null;
+            }
+            this.SaveJson("config.json", config);
+            PluginLog.Info("Credentials applied from the Setup action");
+            this.Reconnect();
+            return true;
         }
 
         // Returns true/false while a recent play attempt's flash window is active, else null.
@@ -377,6 +488,89 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                     this._emojiFetching.TryRemove(emojiId, out _);
                 }
             });
+        }
+
+        // Plays the sound locally through the PC's speakers/headphones instead of the
+        // voice channel — the "what was this one again?" button. Files come from
+        // Discord's CDN and are cached on disk. Decoding uses Windows Media Foundation,
+        // so some formats may be unsupported; failures flash red and log the reason.
+        public async Task<Boolean> PreviewSoundAsync(String key)
+        {
+            if (this.IsDuplicateAction("preview:" + key))
+            {
+                return false;
+            }
+
+            var sound = this.FindSound(key);
+            if (sound == null || this._dataDirectory == null || !sound.SoundId.All(Char.IsDigit))
+            {
+                this.SetPlayFeedback(key, false);
+                return false;
+            }
+
+            try
+            {
+                var path = Path.Combine(this._dataDirectory, "preview", sound.SoundId + ".audio");
+                if (!File.Exists(path))
+                {
+                    var bytes = await this._http.GetByteArrayAsync($"https://cdn.discordapp.com/soundboard-sounds/{sound.SoundId}").ConfigureAwait(false);
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+                    File.WriteAllBytes(path, bytes);
+                }
+
+                this.StartPreviewPlayback(path);
+                PluginLog.Info($"Previewing '{sound.Name}' locally");
+                this.SetPlayFeedback(key, true);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warning(ex, $"Could not preview '{sound.Name}' (format may be unsupported by Media Foundation)");
+                this.SetPlayFeedback(key, false);
+                return false;
+            }
+        }
+
+        private void StartPreviewPlayback(String path)
+        {
+            lock (this._previewLock)
+            {
+                this.StopPreviewLocked();
+
+                var reader = new MediaFoundationReader(path);
+                var output = new WaveOutEvent();
+                output.Init(reader);
+                output.PlaybackStopped += (_, _) =>
+                {
+                    lock (this._previewLock)
+                    {
+                        if (ReferenceEquals(this._previewOutput, output))
+                        {
+                            this._previewOutput = null;
+                            this._previewReader = null;
+                        }
+                        output.Dispose();
+                        reader.Dispose();
+                    }
+                };
+                this._previewOutput = output;
+                this._previewReader = reader;
+                output.Play();
+            }
+        }
+
+        private void StopPreviewLocked()
+        {
+            try
+            {
+                this._previewOutput?.Dispose();
+                this._previewReader?.Dispose();
+            }
+            catch
+            {
+            }
+            this._previewOutput = null;
+            this._previewReader = null;
         }
 
         public Task<Boolean> PlayRandomAsync(Boolean favoritesOnly)
@@ -753,7 +947,8 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
         }
 
         // Subscribes to voice-channel changes and seeds the current state, so the sound
-        // list can keep the active server's sounds at the front as the user hops channels.
+        // list can keep the active server's sounds at the front as the user hops channels
+        // and tiles can reflect whether a press can succeed at all.
         private async Task TrackVoiceChannelAsync(DiscordRpcClient client)
         {
             try
@@ -761,14 +956,45 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
                 using (await client.RequestAsync("SUBSCRIBE", null, evt: "VOICE_CHANNEL_SELECT").ConfigureAwait(false))
                 {
                 }
-
-                using var doc = await client.RequestAsync("GET_SELECTED_VOICE_CHANNEL", null).ConfigureAwait(false);
-                var data = doc.RootElement.GetProperty("data");
-                this.SetCurrentVoiceGuild(data.ValueKind == JsonValueKind.Object ? GetSnowflakeOrString(data, "guild_id") : null);
+                await this.QueryVoiceStateAsync(client).ConfigureAwait(false);
+                this.VoiceTrackingActive = true;
             }
             catch (Exception ex)
             {
+                this.VoiceTrackingActive = false;
                 PluginLog.Warning(ex, "Could not track the current voice channel; sounds will not follow the active server");
+            }
+        }
+
+        private async Task QueryVoiceStateAsync(DiscordRpcClient client)
+        {
+            using var doc = await client.RequestAsync("GET_SELECTED_VOICE_CHANNEL", null).ConfigureAwait(false);
+            var data = doc.RootElement.GetProperty("data");
+            if (data.ValueKind == JsonValueKind.Object)
+            {
+                this.SetVoiceState(true, GetSnowflakeOrString(data, "guild_id"), GetSnowflakeOrString(data, "name"));
+            }
+            else
+            {
+                this.SetVoiceState(false, null, null);
+            }
+        }
+
+        // Re-checks the current voice channel on demand (status tile press).
+        public async Task RefreshVoiceStateAsync()
+        {
+            var client = this._client;
+            if (client?.IsConnected != true)
+            {
+                return;
+            }
+            try
+            {
+                await this.QueryVoiceStateAsync(client).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warning(ex, "Could not refresh voice state");
             }
         }
 
@@ -781,22 +1007,41 @@ namespace Loupedeck.DiscordSoundboardPlugin.Discord
             }
 
             String guildId = null;
+            String channelId = null;
             if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
             {
                 guildId = GetSnowflakeOrString(data, "guild_id");
+                channelId = GetSnowflakeOrString(data, "channel_id");
             }
-            this.SetCurrentVoiceGuild(guildId);
+            this.SetVoiceState(channelId != null, guildId, null);
+
+            // The event payload has no channel name; fetch it in the background.
+            if (channelId != null)
+            {
+                _ = this.RefreshVoiceStateAsync();
+            }
         }
 
-        private void SetCurrentVoiceGuild(String guildId)
+        private void SetVoiceState(Boolean inVoice, String guildId, String channelName)
         {
-            if (this.CurrentVoiceGuildId == guildId)
+            var changed = this.InVoiceChannel != inVoice || this.CurrentVoiceGuildId != guildId || this.CurrentVoiceChannelName != channelName;
+            if (!changed)
             {
                 return;
             }
+
+            var guildChanged = this.CurrentVoiceGuildId != guildId;
+            this.InVoiceChannel = inVoice;
             this.CurrentVoiceGuildId = guildId;
-            PluginLog.Info($"Current voice guild: {guildId ?? "(none)"}");
-            this.SoundsChanged?.Invoke(this, EventArgs.Empty);
+            this.CurrentVoiceChannelName = channelName;
+            PluginLog.Info($"Voice state: {(inVoice ? $"in '{channelName ?? channelId(guildId)}'" : "not in voice")}");
+            this.VoiceStateChanged?.Invoke(this, EventArgs.Empty);
+            if (guildChanged)
+            {
+                this.SoundsChanged?.Invoke(this, EventArgs.Empty);
+            }
+
+            static String channelId(String g) => g != null ? $"guild {g}" : "a voice channel";
         }
 
         private async Task<Dictionary<String, String>> FetchGuildNamesAsync(DiscordRpcClient client)
