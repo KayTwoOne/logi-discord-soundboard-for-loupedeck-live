@@ -1,3 +1,5 @@
+## (13/9/2026) This project is deprecated as the Loupedeck software itself is unreliable, poorly maintained and is riddled with RAM usage leaks, silent crash errors and the likes. This plugin still works, but I no longer advocate for the Loupedeck proprietary app due to its problems.
+
 # Discord Soundboard for Loupedeck Live
 
 Puts your entire Discord soundboard — default sounds and every server's sounds — on
